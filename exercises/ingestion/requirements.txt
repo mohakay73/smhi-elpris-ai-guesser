@@ -1,0 +1,12 @@
+# Direct dependencies only - the things ingestion.py actually imports, plus the
+# server that runs it. Everything else (starlette, pydantic, urllib3, ...) is
+# pulled in automatically as a transitive dependency.
+#
+# Do NOT regenerate this file with `pip freeze`. That dumps your entire
+# environment, transitive packages and all, and you lose the information about
+# what this project actually depends on.
+fastapi==0.115.6
+uvicorn==0.34.0
+requests==2.32.3
+psycopg2-binary==2.9.10
+python-dotenv==1.0.1
