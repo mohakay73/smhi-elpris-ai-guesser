@@ -93,7 +93,7 @@ def build_weather_payload(value, quality, observed_at):
     # that never mentions NaN. Real SMHI data has gaps; the synthetic file does not.
     return {
         "value": None if pd.isna(value) else value,
-        "quality": quality,
+        "quality": None if pd.isna(quality) else str(quality),
         "date": observed_at.isoformat(),
     }
 

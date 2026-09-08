@@ -14,7 +14,7 @@ if not DATABASE_URL:
 
 # Team configuration
 AREA = "SE2"
-STATION = "97400"
+STATION = "134110"
 TODAY = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
 # 1. Ingest Electricity
