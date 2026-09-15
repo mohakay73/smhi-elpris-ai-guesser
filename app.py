@@ -4,6 +4,7 @@ from pathlib import Path
 import duckdb
 from fastapi import FastAPI, HTTPException
 from dotenv import load_dotenv
+from fastapi.middleware.cors import CORSMiddleware
 
 load_dotenv()
 
@@ -11,6 +12,14 @@ app = FastAPI(
     title="Sweden Electricity Price Predictor API",
     description="Predicts tomorrow's electricity prices using SMHI weather data and historical trends.",
     version="1.0"
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allows all origins (or you can specify your github pages domain)
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 MODEL_PATH = Path("model/model.pkl")
