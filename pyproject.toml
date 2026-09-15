@@ -12,8 +12,9 @@ dependencies = [
     "matplotlib>=3.8",
     "duckdb>=1.0",
     "psycopg2-binary>=2.9",
+    "fastapi>=0.115",
+    "uvicorn>=0.30"
 ]
-
 [project.optional-dependencies]
 # Behövs för att köra notebooken.
 notebook = ["jupyter>=1.0", "ipykernel>=6.29"]
