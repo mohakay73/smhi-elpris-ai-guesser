@@ -6,6 +6,9 @@ from fastapi import FastAPI, HTTPException
 from dotenv import load_dotenv
 from fastapi.middleware.cors import CORSMiddleware
 import traceback
+from datetime import datetime, timedelta
+
+import pandas as pd
 
 load_dotenv()
 
@@ -74,9 +77,12 @@ def get_prediction():
         prediction = float(model.predict(X)[0])
         target_date = str(df["target_date"].values[0])
 
+        base_date = pd.to_datetime(df["target_date"].values[0])
+        forecast_date = (base_date + timedelta(days=1)).strftime("%Y-%m-%d")
+
         return {
             "price_area": PRICE_AREA,
-            "target_date": target_date,
+            "target_date": forecast_date,
             "target_type": target_type,
             "predicted_price_sek_per_kwh": round(prediction, 4),
             "metrics": payload.get("metrics", {})

@@ -1,32 +1,35 @@
-name: Daily Ingestion
+name: Daily Ingestion & Feature Pipeline
 
 on:
   schedule:
-    # Runs at 10:00 UTC daily (12:00 CEST Swedish Summer Time)
-    - cron: '0 10 * * *'
-  # Allows manual triggering from the GitHub Actions tab for testing
-  workflow_dispatch:
+    - cron: '30 14 * * *' # Runs daily at 14:30 UTC (after Nord Pool publishes data)
+  workflow_dispatch: # Allows manual runs from GitHub
 
 jobs:
-  ingest:
+  run-pipeline:
     runs-on: ubuntu-latest
-
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
-        with:
-          version: "latest"
-
       - name: Set up Python
-        run: uv python install 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
 
-      - name: Install project dependencies
-        run: uv sync
+      - name: Install dependencies with uv
+        run: |
+          pip install uv
+          uv pip install --system -r requirements.txt
 
-      - name: Run ingestion script
+      - name: Run raw data ingestion
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-        run: uv run python daily_run.py
+          PRICE_AREA: SE2
+        run: python daily_run.py
+
+      - name: Run feature pipeline
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          PRICE_AREA: SE2
+        run: python feature_pipeline.py
