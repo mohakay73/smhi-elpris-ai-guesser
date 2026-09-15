@@ -5,6 +5,7 @@ import duckdb
 from fastapi import FastAPI, HTTPException
 from dotenv import load_dotenv
 from fastapi.middleware.cors import CORSMiddleware
+import traceback
 
 load_dotenv()
 
@@ -82,4 +83,5 @@ def get_prediction():
         }
 
     except Exception as e:
+        print("ERROR DETAILS:", traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
