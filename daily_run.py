@@ -8,6 +8,19 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+AREA_COORDS = {
+    "SE1": (65.5435, 22.1219),
+    "SE2": (63.1792, 14.6357),
+    "SE3": (59.3417, 18.0549),
+    "SE4": (55.6050, 13.0038),
+}
+
+SMHI_FORECAST_URL = (
+    "https://opendata-download-metfcst.smhi.se/api/category/snow1g/version/1"
+    "/geotype/point/lon/{lon}/lat/{lat}/data.json"
+    "?parameters=air_temperature,wind_speed"
+)
+
 DATABASE_URL = os.environ.get("DATABASE_URL")
 if not DATABASE_URL:
     sys.exit("DATABASE_URL is not set.")
@@ -54,5 +67,34 @@ with conn.cursor() as cur:
         weather_rows,
     )
 conn.commit()
+now_utc = datetime.now(timezone.utc)
+lat, lon = AREA_COORDS[AREA]
+f_res = requests.get(SMHI_FORECAST_URL.format(lat=lat, lon=lon), timeout=15)
+f_res.raise_for_status()
+
+forecast_rows = []
+for point in f_res.json().get("timeSeries", []):
+    valid_at = datetime.fromisoformat(point["time"].replace("Z", "+00:00"))
+    if valid_at <= now_utc:
+        continue
+    forecast_rows.append((
+        f"forecast:{AREA}",
+        "forecast",
+        valid_at,
+        Json(point),
+    ))
+
+if forecast_rows:
+    with conn.cursor() as cur:
+        psycopg2.extras.execute_values(
+            cur,
+            "INSERT INTO raw__weather (station, parameter, observed_at, data) VALUES %s",
+            forecast_rows,
+        )
+    conn.commit()
+print(f"Ingested {len(forecast_rows)} forecast rows for {AREA}.")
+
+conn.close()
+
 conn.close()
 print(f"Ingested {len(weather_rows)} weather observations for station {STATION}.")
