@@ -1,6 +1,7 @@
 import os
 import pickle
 from pathlib import Path
+
 import duckdb
 from dotenv import load_dotenv
 

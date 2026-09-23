@@ -1,4 +1,5 @@
 import os
+
 import psycopg2
 from psycopg2.extras import Json
 
@@ -18,7 +19,7 @@ finally:
     conn.close()
 
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import psycopg2
 import requests
@@ -44,7 +45,7 @@ def fetch_weather_rows(station):
 
         for entry in response.json().get("value") or []:
             # SMHI gives epoch MILLISECONDS in UTC, and says so nowhere.
-            observed_at = datetime.fromtimestamp(entry["date"] / 1000, tz=timezone.utc)
+            observed_at = datetime.fromtimestamp(entry["date"] / 1000, tz=UTC)
             rows.append((station, parameter_name, observed_at, Json(entry)))
     return rows
 

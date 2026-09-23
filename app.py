@@ -1,14 +1,14 @@
 import os
 import pickle
-from pathlib import Path
-import duckdb
-from fastapi import FastAPI, HTTPException
-from dotenv import load_dotenv
-from fastapi.middleware.cors import CORSMiddleware
 import traceback
-from datetime import datetime, timedelta
+from datetime import timedelta
+from pathlib import Path
 
+import duckdb
 import pandas as pd
+from dotenv import load_dotenv
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 
 load_dotenv()
 

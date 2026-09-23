@@ -1,5 +1,5 @@
-from datetime import datetime, timezone
 import os
+from datetime import UTC, datetime
 
 import psycopg2
 import requests
@@ -134,7 +134,7 @@ def fetch_weather_rows(station):
         response.raise_for_status()
 
         for entry in response.json().get("value") or []:
-            observed_at = datetime.fromtimestamp(entry["date"] / 1000, tz=timezone.utc)
+            observed_at = datetime.fromtimestamp(entry["date"] / 1000, tz=UTC)
             rows.append((str(station), parameter_name, observed_at, Json(entry)))
 
     return rows

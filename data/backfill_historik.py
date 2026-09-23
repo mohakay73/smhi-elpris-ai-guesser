@@ -129,7 +129,7 @@ def load_weather(conn, station=None):
             records.append((
                 str(station),
                 param,
-                getattr(row, "observed_at"),
+                row.observed_at,
                 json.dumps(build_weather_payload(
                     getattr(row, column), row.Kvalitet, row.observed_at)),
             ))

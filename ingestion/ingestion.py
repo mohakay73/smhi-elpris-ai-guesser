@@ -1,7 +1,8 @@
 """Fetch a day of hourly weather for one location and land it in the raw layer."""
 
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+
 import psycopg2
 import requests
 from dotenv import load_dotenv
@@ -44,7 +45,7 @@ def fetch_weather_rows(station: int | str):
 
         for entry in response.json().get("value") or []:
             # SMHI provides epoch milliseconds in UTC -> convert to aware UTC datetime
-            observed_at = datetime.fromtimestamp(entry["date"] / 1000, tz=timezone.utc)
+            observed_at = datetime.fromtimestamp(entry["date"] / 1000, tz=UTC)
             rows.append((str(station), parameter_name, observed_at, Json(entry)))
     return rows
 

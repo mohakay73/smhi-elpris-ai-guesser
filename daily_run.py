@@ -1,10 +1,11 @@
 import os
 import sys
-from datetime import datetime, timezone
-import requests
+from datetime import UTC, datetime
+
 import psycopg2
-from psycopg2.extras import Json
+import requests
 from dotenv import load_dotenv
+from psycopg2.extras import Json
 
 load_dotenv()
 
@@ -28,7 +29,7 @@ if not DATABASE_URL:
 # Team configuration
 AREA = "SE2"
 STATION = "134110"
-TODAY = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+TODAY = datetime.now(UTC).strftime("%Y-%m-%d")
 
 # 1. Ingest Electricity
 year, month, day = TODAY.split("-")
@@ -58,7 +59,7 @@ for param_id, param_name in params.items():
     w_res = requests.get(smhi_url, timeout=15)
     w_res.raise_for_status()
     for entry in w_res.json().get("value") or []:
-        obs_at = datetime.fromtimestamp(entry["date"] / 1000, tz=timezone.utc)
+        obs_at = datetime.fromtimestamp(entry["date"] / 1000, tz=UTC)
         weather_rows.append((str(STATION), param_name, obs_at, Json(entry)))
 
 with conn.cursor() as cur:
@@ -67,7 +68,7 @@ with conn.cursor() as cur:
         weather_rows,
     )
 conn.commit()
-now_utc = datetime.now(timezone.utc)
+now_utc = datetime.now(UTC)
 lat, lon = AREA_COORDS[AREA]
 f_res = requests.get(SMHI_FORECAST_URL.format(lat=lat, lon=lon), timeout=15)
 f_res.raise_for_status()
