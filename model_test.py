@@ -1,14 +1,16 @@
-from pathlib import Path
 import pickle
+from pathlib import Path
+
 import pandas as pd
 
-MODEL_PATH = Path("model/model.pkl")
+from model.predict import predict_with_intervals
+
+MODEL_PATH = Path(__file__).resolve().parent / "model" / "model.pkl"
 
 with MODEL_PATH.open("rb") as file_handle:
     payload = pickle.load(file_handle)
 
-model = payload["model"]
-feature_names = payload["features"]
+base_features = payload.get("base_features", payload["features"])
 
 # Ersätt värden nedan med resultatet från din SQL-fråga mot feat__daily
 neon_row = {
@@ -26,16 +28,15 @@ neon_row = {
     "is_weekend": True,
 }
 
-missing = [name for name in feature_names if neon_row.get(name) is None]
+missing = [name for name in base_features if neon_row.get(name) is None]
 if missing:
     raise ValueError(f"Feature-värden saknas: {missing}")
 
-feature_row = pd.DataFrame(
-    [{name: neon_row[name] for name in feature_names}], 
-    columns=feature_names
-)
+raw_df = pd.DataFrame([neon_row])
+res = predict_with_intervals(payload, raw_df)
 
-prediction = float(model.predict(feature_row)[0])
-print(f"Prediction: {prediction}")
-print(f"Features: {feature_names}")
+print(f"Prediction (Mean):   {res['prediction']:.4f} SEK/kWh")
+print(f"Prediction (Median): {res['p50']:.4f} SEK/kWh")
+print(f"80% Confidence Band: [{res['p10']:.4f} .. {res['p90']:.4f}] SEK/kWh (P10–P90)")
+print(f"Features ({len(payload['features'])}): {payload['features']}")
 print(f"Metrics: {payload.get('metrics')}")

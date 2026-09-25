@@ -9,9 +9,11 @@ from psycopg2.extras import execute_values
 
 from model.train import (
     AREA_STATIONS,
+    DOMAIN_FEATURES,
     STOCKHOLM,
     daily_price_table,
     daily_weather_table,
+    enrich_domain_features,
 )
 
 load_dotenv()
@@ -147,6 +149,8 @@ def build_features(
     df["month"] = df.index.month
     df["is_weekend"] = (df.index.dayofweek >= 5).astype(int)
 
+    df = enrich_domain_features(df)
+
     label_col = "mean_price" if TARGET == "mean" else "peak_price"
     df["y"] = df[label_col].shift(-1)
     return df
@@ -177,6 +181,12 @@ def write_features(conn, area: str, features: pd.DataFrame) -> int:
     cols = list(features.columns)
     
     with conn.cursor() as cur:
+        for d_col in DOMAIN_FEATURES:
+            if d_col in cols:
+                cur.execute(
+                    f'ALTER TABLE feat__daily ADD COLUMN IF NOT EXISTS "{d_col}" DOUBLE PRECISION;'
+                )
+
         tuples = [tuple(x) for x in features.to_numpy()]
         cols_sql = ", ".join([f'"{col}"' for col in cols])
         
@@ -195,7 +205,8 @@ def write_features(conn, area: str, features: pd.DataFrame) -> int:
 
 
 def refresh_daily_features(conn, area: str) -> int:
-    station_info = AREA_STATIONS[area] if 'AREA_STATIONS' in globals() or 'AREA_STATIONS' in locals() else "134110"
+    has_stations = "AREA_STATIONS" in globals() or "AREA_STATIONS" in locals()
+    station_info = AREA_STATIONS[area] if has_stations else "134110"
     if isinstance(station_info, (list, tuple)):
         station = station_info[0]
     else:
