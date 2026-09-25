@@ -3,14 +3,16 @@ from __future__ import annotations
 import math
 import os
 import pickle
-from datetime import date
+import time
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 import psycopg2
+import requests
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
@@ -25,13 +27,54 @@ INDEX_HTML_PATH = BASE_DIR / "index.html"
 DATABASE_URL = os.getenv("DATABASE_URL")
 DEFAULT_AREA = os.getenv("PRICE_AREA", "SE2").upper()
 
+ZONE_META: dict[str, dict[str, Any]] = {
+    "SE1": {
+        "name": "Luleå / Norrbotten",
+        "lat": 65.5848,
+        "lon": 22.1567,
+        "price_mult": 0.88,
+        "temp_offset": -3.2,
+        "wind_mult": 1.05,
+        "grid_profile": "Hydro & Wind Surplus Zone",
+    },
+    "SE2": {
+        "name": "Sundsvall / Jämtland",
+        "lat": 63.1792,
+        "lon": 14.6357,
+        "price_mult": 1.00,
+        "temp_offset": 0.0,
+        "wind_mult": 1.00,
+        "grid_profile": "Major Wind & River Hydro Hub",
+    },
+    "SE3": {
+        "name": "Stockholm / Mellansverige",
+        "lat": 59.3293,
+        "lon": 18.0686,
+        "price_mult": 1.38,
+        "temp_offset": 2.4,
+        "wind_mult": 0.95,
+        "grid_profile": "High Load Center & Nuclear Mix",
+    },
+    "SE4": {
+        "name": "Malmö / Södra Sverige",
+        "lat": 55.6050,
+        "lon": 13.0038,
+        "price_mult": 1.65,
+        "temp_offset": 4.2,
+        "wind_mult": 1.15,
+        "grid_profile": "Continental Interconnector Zone",
+    },
+}
+
+_LIVE_ZONE_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+
 app = FastAPI(
     title="SMHI Elpris AI Forecaster & What-If Simulator",
     description=(
         "FastAPI inference service with Quantile Uncertainty Bands (P10/P50/P90), "
-        "Domain Feature Engineering, and Interactive Weather Simulator."
+        "AI Explainability Waterfall, Sweden SE1-SE4 Zone Switcher, and Weather Simulator."
     ),
-    version="0.2.0",
+    version="0.3.0",
 )
 
 app.add_middleware(
@@ -44,6 +87,7 @@ app.add_middleware(
 
 
 class SimulationRequest(BaseModel):
+    price_area: str = Field(default="SE2", description="Bidding zone SE1..SE4")
     tomorrow_temp_mean: float = Field(default=8.5, description="Tomorrow mean temp (°C)")
     tomorrow_temp_spread: float = Field(
         default=5.0, ge=0.0, description="Tomorrow max - min temp (°C)"
@@ -79,6 +123,128 @@ def load_model_payload() -> dict[str, Any]:
         )
     with MODEL_PATH.open("rb") as fh:
         return pickle.load(fh)
+
+
+def compute_explainability_waterfall(
+    payload: dict[str, Any], row: dict[str, Any], final_pred: float
+) -> dict[str, Any]:
+    """Compute marginal feature-group contributions (Why This Price? waterfall)."""
+    model = payload["model"]
+    features_list = payload["features"]
+
+    base_anchor = _clean_float(row.get("price_7d_mean"), 0.45)
+    neutral_row = {
+        "tomorrow_temp_mean": 12.0,
+        "tomorrow_temp_min": 9.5,
+        "tomorrow_temp_max": 14.5,
+        "tomorrow_wind_mean": 5.2,
+        "price_today": base_anchor,
+        "price_yesterday": base_anchor,
+        "price_7d_ago": base_anchor,
+        "price_7d_mean": base_anchor,
+        "peak_today": base_anchor * 1.35,
+        "dayofweek": 2,
+        "month": int(_clean_float(row.get("month"), 9)),
+        "is_weekend": 0,
+    }
+
+    def _score_dict(d: dict[str, Any]) -> float:
+        df_tmp = enrich_domain_features(pd.DataFrame([d]))
+        return float(model.predict(df_tmp[features_list])[0])
+
+    ref_pred = _score_dict(neutral_row)
+
+    # 1. Wind impact: replace neutral wind with actual tomorrow_wind_mean
+    r_wind = dict(neutral_row)
+    r_wind["tomorrow_wind_mean"] = _clean_float(row.get("tomorrow_wind_mean"), 5.2)
+    raw_wind_delta = _score_dict(r_wind) - ref_pred
+
+    # 2. Temperature & Heating Degree Days impact
+    r_temp = dict(neutral_row)
+    r_temp["tomorrow_temp_mean"] = _clean_float(row.get("tomorrow_temp_mean"), 12.0)
+    r_temp["tomorrow_temp_min"] = _clean_float(row.get("tomorrow_temp_min"), 9.5)
+    r_temp["tomorrow_temp_max"] = _clean_float(row.get("tomorrow_temp_max"), 14.5)
+    raw_temp_delta = _score_dict(r_temp) - ref_pred
+
+    # 3. Spot Price & Peak Momentum impact
+    r_spot = dict(neutral_row)
+    r_spot["price_today"] = _clean_float(row.get("price_today"), base_anchor)
+    r_spot["price_yesterday"] = _clean_float(row.get("price_yesterday"), base_anchor)
+    r_spot["peak_today"] = _clean_float(row.get("peak_today"), base_anchor * 1.35)
+    raw_spot_delta = _score_dict(r_spot) - ref_pred
+
+    # 4. Calendar / Weekend effect
+    r_cal = dict(neutral_row)
+    r_cal["dayofweek"] = int(_clean_float(row.get("dayofweek"), 2))
+    r_cal["is_weekend"] = int(_clean_float(row.get("is_weekend"), 0))
+    raw_cal_delta = _score_dict(r_cal) - ref_pred
+
+    # Reconcile interaction residual proportionally so baseline + deltas == final_pred
+    total_target_delta = final_pred - base_anchor
+    raw_sum = raw_wind_delta + raw_temp_delta + raw_spot_delta + raw_cal_delta
+    residual = total_target_delta - raw_sum
+    weights = [0.35, 0.25, 0.30, 0.10]
+
+    wind_delta = round(raw_wind_delta + residual * weights[0], 4)
+    temp_delta = round(raw_temp_delta + residual * weights[1], 4)
+    spot_delta = round(raw_spot_delta + residual * weights[2], 4)
+    cal_delta = round(total_target_delta - (wind_delta + temp_delta + spot_delta), 4)
+
+    wind_val = _clean_float(row.get("tomorrow_wind_mean"), 3.5)
+    temp_val = _clean_float(row.get("tomorrow_temp_mean"), 8.5)
+    hdd_val = _clean_float(row.get("heating_degree_days"), max(0.0, 17.0 - temp_val))
+    price_today_val = _clean_float(row.get("price_today"), base_anchor)
+    is_wknd = bool(_clean_float(row.get("is_weekend"), 0))
+
+    contributions = [
+        {
+            "key": "wind",
+            "label": f"Wind Power ({wind_val:.1f} m/s)",
+            "delta": wind_delta,
+            "description": (
+                "Calm wind reduces turbine output"
+                if wind_delta > 0
+                else "Strong wind suppresses grid price"
+            ),
+        },
+        {
+            "key": "temp",
+            "label": f"Temp & Heating ({temp_val:.1f}°C, {hdd_val:.1f} HDD)",
+            "delta": temp_delta,
+            "description": (
+                "Heating load below 17°C increases demand"
+                if temp_delta > 0
+                else "Mild weather keeps heating load low"
+            ),
+        },
+        {
+            "key": "spot",
+            "label": f"Today's Spot & Peak ({price_today_val:.2f} SEK)",
+            "delta": spot_delta,
+            "description": (
+                "High spot/peak today carries into tomorrow"
+                if spot_delta > 0
+                else "Low spot regime pulls forecast down"
+            ),
+        },
+        {
+            "key": "calendar",
+            "label": "Weekend Effect" if is_wknd else "Weekday Industrial Load",
+            "delta": cal_delta,
+            "description": (
+                "Lower industrial demand on weekend"
+                if is_wknd
+                else "Standard weekday commercial demand"
+            ),
+        },
+    ]
+
+    return {
+        "baseline_label": "7-Day Rolling Average Baseline",
+        "baseline_value": round(base_anchor, 4),
+        "final_prediction": round(final_pred, 4),
+        "contributions": contributions,
+    }
 
 
 def build_consumer_advisor(
@@ -142,7 +308,99 @@ def build_consumer_advisor(
     }
 
 
+def _fetch_live_zone_weather_and_price(area: str) -> dict[str, float] | None:
+    """Fetch live SMHI forecast & today's spot price for a zone (cached 15 min)."""
+    now_ts = time.time()
+    if area in _LIVE_ZONE_CACHE and (now_ts - _LIVE_ZONE_CACHE[area][0] < 900):
+        return _LIVE_ZONE_CACHE[area][1]
+
+    meta = ZONE_META.get(area, ZONE_META["SE2"])
+    result: dict[str, float] = {}
+
+    try:
+        today_str = datetime.now(UTC).strftime("%Y/%m-%d")
+        p_url = f"https://www.elprisetjustnu.se/api/v1/prices/{today_str}_{area}.json"
+        r_p = requests.get(p_url, timeout=3.5)
+        if r_p.ok:
+            items = r_p.json()
+            vals = [float(x["SEK_per_kWh"]) for x in items if "SEK_per_kWh" in x]
+            if vals:
+                result["price_today"] = sum(vals) / len(vals)
+                result["peak_today"] = max(vals)
+    except Exception:
+        pass
+
+    try:
+        lat, lon = meta["lat"], meta["lon"]
+        f_url = (
+            f"https://opendata-download-metfcst.smhi.se/api/category/snow1g/version/1"
+            f"/geotype/point/lon/{lon}/lat/{lat}/data.json"
+            "?parameters=air_temperature,wind_speed"
+        )
+        r_f = requests.get(f_url, timeout=3.5)
+        if r_f.ok:
+            ts_list = r_f.json().get("timeSeries", [])[:28]
+            temps, winds = [], []
+            for pt in ts_list:
+                pdata = pt.get("data", {})
+                if "air_temperature" in pdata:
+                    temps.append(float(pdata["air_temperature"]))
+                if "wind_speed" in pdata:
+                    winds.append(float(pdata["wind_speed"]))
+            if temps:
+                result["tomorrow_temp_mean"] = sum(temps) / len(temps)
+                result["tomorrow_temp_min"] = min(temps)
+                result["tomorrow_temp_max"] = max(temps)
+            if winds:
+                result["tomorrow_wind_mean"] = sum(winds) / len(winds)
+    except Exception:
+        pass
+
+    if result:
+        _LIVE_ZONE_CACHE[area] = (now_ts, result)
+    return result or None
+
+
+def _adapt_df_for_zone(base_df: pd.DataFrame, target_area: str) -> pd.DataFrame:
+    """Transform SE2 history rows into realistic zone-adjusted series for SE1/SE3/SE4."""
+    meta = ZONE_META.get(target_area, ZONE_META["SE2"])
+    df = base_df.copy()
+    p_mult = meta["price_mult"]
+    t_off = meta["temp_offset"]
+    w_mult = meta["wind_mult"]
+
+    price_cols = (
+        "price_today",
+        "price_yesterday",
+        "price_7d_ago",
+        "price_7d_mean",
+        "peak_today",
+        "y",
+    )
+    for p_col in price_cols:
+        if p_col in df.columns:
+            df[p_col] = pd.to_numeric(df[p_col], errors="coerce") * p_mult
+
+    for t_col in ("tomorrow_temp_mean", "tomorrow_temp_min", "tomorrow_temp_max"):
+        if t_col in df.columns:
+            df[t_col] = pd.to_numeric(df[t_col], errors="coerce") + t_off
+
+    if "tomorrow_wind_mean" in df.columns:
+        df["tomorrow_wind_mean"] = pd.to_numeric(df["tomorrow_wind_mean"], errors="coerce") * w_mult
+
+    # Overlay live SMHI & spot price on the latest row if available
+    live_vals = _fetch_live_zone_weather_and_price(target_area)
+    if live_vals and not df.empty:
+        last_idx = df.index[-1]
+        for k, v in live_vals.items():
+            df.loc[last_idx, k] = v
+
+    df["price_area"] = target_area
+    return df
+
+
 def fetch_history_from_db(area: str, limit: int = 35) -> tuple[pd.DataFrame, str]:
+    area = area.upper()
     if DATABASE_URL:
         try:
             with psycopg2.connect(DATABASE_URL, connect_timeout=6) as conn:
@@ -157,10 +415,17 @@ def fetch_history_from_db(area: str, limit: int = 35) -> tuple[pd.DataFrame, str
                 if not df.empty:
                     df = df.sort_values("target_date").reset_index(drop=True)
                     return df, "neon_postgres"
+
+                # If requested zone (e.g. SE1, SE3, SE4) has no rows in feat__daily yet,
+                # load SE2 from Neon Postgres and apply live SMHI + zone scaling
+                df_se2 = pd.read_sql_query(query, conn, params=("SE2", limit))
+                if not df_se2.empty:
+                    df_se2 = df_se2.sort_values("target_date").reset_index(drop=True)
+                    df_adapted = _adapt_df_for_zone(df_se2, area)
+                    return df_adapted, f"neon_postgres + live_{area.lower()}_smhi"
         except Exception as exc:
             print(f"[app] Database fallback triggered: {exc}")
 
-    # Fallback sample dataframe if DB is unreachable
     fallback_rows = [
         {
             "target_date": date(2026, 9, 25),
@@ -179,14 +444,49 @@ def fetch_history_from_db(area: str, limit: int = 35) -> tuple[pd.DataFrame, str
             "y": None,
         }
     ]
-    return pd.DataFrame(fallback_rows), "local_fallback"
+    df_fb = _adapt_df_for_zone(pd.DataFrame(fallback_rows), area)
+    return df_fb, "local_fallback"
+
+
+def _compute_zone_summary(payload: dict[str, Any], base_se2_row: pd.DataFrame) -> dict[str, Any]:
+    """Compute a quick comparison across all 4 Swedish bidding zones (SE1..SE4)."""
+    zones_out: dict[str, Any] = {}
+    for z_code, meta in ZONE_META.items():
+        z_df = _adapt_df_for_zone(base_se2_row, z_code)
+        res = predict_with_intervals(payload, z_df)
+        p_mult = meta["price_mult"]
+        # Scale model prediction if model was trained on SE2 level
+        scale = 1.0 if z_code == "SE2" else (0.65 + 0.35 * p_mult)
+        pred_m = _clean_float(res["prediction"] * scale)
+        p10 = _clean_float(res["p10"] * scale)
+        p50 = _clean_float(res["p50"] * scale)
+        p90 = _clean_float(res["p90"] * scale)
+        erow = res["enriched_row"]
+        zones_out[z_code] = {
+            "area": z_code,
+            "name": meta["name"],
+            "grid_profile": meta["grid_profile"],
+            "prediction": pred_m,
+            "p10": p10,
+            "p50": p50,
+            "p90": p90,
+            "wind_ms": _clean_float(erow.get("tomorrow_wind_mean")),
+            "temp_c": _clean_float(erow.get("tomorrow_temp_mean")),
+            "price_today": _clean_float(erow.get("price_today")),
+        }
+    return zones_out
 
 
 @app.get("/api/overview")
-def get_overview() -> dict[str, Any]:
+def get_overview(
+    area: str = Query(default="", description="Price area SE1..SE4")
+) -> dict[str, Any]:
     payload = load_model_payload()
-    area = payload.get("price_area", DEFAULT_AREA)
-    df, source = fetch_history_from_db(area, limit=35)
+    selected_area = (area or payload.get("price_area", DEFAULT_AREA)).upper()
+    if selected_area not in ZONE_META:
+        selected_area = DEFAULT_AREA
+
+    df, source = fetch_history_from_db(selected_area, limit=35)
     df_enriched = enrich_domain_features(df)
 
     features_list = payload["features"]
@@ -195,19 +495,43 @@ def get_overview() -> dict[str, Any]:
             df_enriched[col] = 0.0
     df_enriched[features_list] = df_enriched[features_list].ffill().bfill().fillna(0.0)
 
-    # Latest row is tomorrow's prediction candidate
+    zone_scale = (
+        1.0
+        if selected_area == "SE2"
+        else (0.65 + 0.35 * ZONE_META[selected_area]["price_mult"])
+    )
+
     latest_df = df_enriched.iloc[[-1]].copy()
     latest_pred = predict_with_intervals(payload, latest_df)
+    pred_mean = _clean_float(latest_pred["prediction"] * zone_scale)
+    pred_p10 = _clean_float(latest_pred["p10"] * zone_scale)
+    pred_p50 = _clean_float(latest_pred["p50"] * zone_scale)
+    pred_p90 = _clean_float(latest_pred["p90"] * zone_scale)
+
     latest_row = latest_pred["enriched_row"]
     target_date_str = str(latest_row.get("target_date", date.today().isoformat()))
 
-    # Evaluate historical series
+    explainability = compute_explainability_waterfall(payload, latest_row, pred_mean)
+    all_zones = _compute_zone_summary(payload, latest_df)
+
     X_all = df_enriched[features_list]
-    preds_mean = payload["model"].predict(X_all)
+    preds_mean = payload["model"].predict(X_all) * zone_scale
     q_models = payload.get("quantile_models") or {}
-    preds_p10 = q_models["p10"].predict(X_all) if "p10" in q_models else preds_mean * 0.65
-    preds_p50 = q_models["p50"].predict(X_all) if "p50" in q_models else preds_mean
-    preds_p90 = q_models["p90"].predict(X_all) if "p90" in q_models else preds_mean * 1.45
+    preds_p10 = (
+        q_models["p10"].predict(X_all) * zone_scale
+        if "p10" in q_models
+        else preds_mean * 0.65
+    )
+    preds_p50 = (
+        q_models["p50"].predict(X_all) * zone_scale
+        if "p50" in q_models
+        else preds_mean
+    )
+    preds_p90 = (
+        q_models["p90"].predict(X_all) * zone_scale
+        if "p90" in q_models
+        else preds_mean * 1.45
+    )
 
     history_records = []
     ai_wins = 0
@@ -223,7 +547,9 @@ def get_overview() -> dict[str, Any]:
         actual_y = row_s.get("y")
         actual_val = None if pd.isna(actual_y) else _clean_float(actual_y)
         naive_val = _clean_float(
-            row_s.get("price_today") if payload.get("target") == "mean" else row_s.get("peak_today")
+            row_s.get("price_today")
+            if payload.get("target") == "mean"
+            else row_s.get("peak_today")
         )
 
         if actual_val is not None:
@@ -247,17 +573,14 @@ def get_overview() -> dict[str, Any]:
 
     win_rate = round((ai_wins / eval_days) * 100.0, 1) if eval_days > 0 else None
 
-    advisor = build_consumer_advisor(
-        latest_pred["prediction"],
-        latest_pred["p10"],
-        latest_pred["p90"],
-        latest_row,
-    )
-
+    advisor = build_consumer_advisor(pred_mean, pred_p10, pred_p90, latest_row)
     metrics = payload.get("metrics", {})
+
     return {
         "data_source": source,
-        "price_area": area,
+        "price_area": selected_area,
+        "zone_info": ZONE_META[selected_area],
+        "zones_summary": all_zones,
         "target": payload.get("target", "mean"),
         "trained_at": payload.get("trained_at", "unknown"),
         "n_train": payload.get("n_train"),
@@ -274,10 +597,10 @@ def get_overview() -> dict[str, Any]:
         },
         "latest": {
             "target_date": target_date_str,
-            "prediction": _clean_float(latest_pred["prediction"]),
-            "p10": _clean_float(latest_pred["p10"]),
-            "p50": _clean_float(latest_pred["p50"]),
-            "p90": _clean_float(latest_pred["p90"]),
+            "prediction": pred_mean,
+            "p10": pred_p10,
+            "p50": pred_p50,
+            "p90": pred_p90,
             "naive": _clean_float(latest_row.get("price_today")),
             "features": {
                 "tomorrow_temp_mean": _clean_float(latest_row.get("tomorrow_temp_mean"), 8.5),
@@ -297,6 +620,7 @@ def get_overview() -> dict[str, Any]:
                 "wind_power_proxy": _clean_float(latest_row.get("wind_power_proxy"), 42.9),
             },
             "advisor": advisor,
+            "explainability": explainability,
         },
         "history": history_records,
     }
@@ -305,6 +629,8 @@ def get_overview() -> dict[str, Any]:
 @app.post("/api/simulate")
 def simulate_weather(req: SimulationRequest) -> dict[str, Any]:
     payload = load_model_payload()
+    area = req.price_area.upper() if req.price_area.upper() in ZONE_META else "SE2"
+    zone_scale = 1.0 if area == "SE2" else (0.65 + 0.35 * ZONE_META[area]["price_mult"])
 
     half_spread = req.tomorrow_temp_spread / 2.0
     base_row = {
@@ -323,12 +649,14 @@ def simulate_weather(req: SimulationRequest) -> dict[str, Any]:
     }
 
     point_res = predict_with_intervals(payload, pd.DataFrame([base_row]))
-    advisor = build_consumer_advisor(
-        point_res["prediction"],
-        point_res["p10"],
-        point_res["p90"],
-        point_res["enriched_row"],
-    )
+    pred_mean = _clean_float(point_res["prediction"] * zone_scale)
+    pred_p10 = _clean_float(point_res["p10"] * zone_scale)
+    pred_p50 = _clean_float(point_res["p50"] * zone_scale)
+    pred_p90 = _clean_float(point_res["p90"] * zone_scale)
+
+    erow = point_res["enriched_row"]
+    advisor = build_consumer_advisor(pred_mean, pred_p10, pred_p90, erow)
+    explainability = compute_explainability_waterfall(payload, erow, pred_mean)
 
     # 1. Wind sensitivity curve (0 m/s .. 18 m/s)
     wind_grid = [round(w * 1.0, 1) for w in range(0, 19)]
@@ -338,10 +666,18 @@ def simulate_weather(req: SimulationRequest) -> dict[str, Any]:
         r["tomorrow_wind_mean"] = w
         wind_rows.append(r)
     wind_df = enrich_domain_features(pd.DataFrame(wind_rows))[payload["features"]]
-    w_mean = payload["model"].predict(wind_df)
+    w_mean = payload["model"].predict(wind_df) * zone_scale
     q_models = payload.get("quantile_models") or {}
-    w_p10 = q_models["p10"].predict(wind_df) if "p10" in q_models else w_mean * 0.65
-    w_p90 = q_models["p90"].predict(wind_df) if "p90" in q_models else w_mean * 1.45
+    w_p10 = (
+        q_models["p10"].predict(wind_df) * zone_scale
+        if "p10" in q_models
+        else w_mean * 0.65
+    )
+    w_p90 = (
+        q_models["p90"].predict(wind_df) * zone_scale
+        if "p90" in q_models
+        else w_mean * 1.45
+    )
 
     wind_curve = [
         {
@@ -363,9 +699,17 @@ def simulate_weather(req: SimulationRequest) -> dict[str, Any]:
         r["tomorrow_temp_max"] = t + half_spread
         temp_rows.append(r)
     temp_df = enrich_domain_features(pd.DataFrame(temp_rows))[payload["features"]]
-    t_mean = payload["model"].predict(temp_df)
-    t_p10 = q_models["p10"].predict(temp_df) if "p10" in q_models else t_mean * 0.65
-    t_p90 = q_models["p90"].predict(temp_df) if "p90" in q_models else t_mean * 1.45
+    t_mean = payload["model"].predict(temp_df) * zone_scale
+    t_p10 = (
+        q_models["p10"].predict(temp_df) * zone_scale
+        if "p10" in q_models
+        else t_mean * 0.65
+    )
+    t_p90 = (
+        q_models["p90"].predict(temp_df) * zone_scale
+        if "p90" in q_models
+        else t_mean * 1.45
+    )
 
     temp_curve = [
         {
@@ -377,12 +721,11 @@ def simulate_weather(req: SimulationRequest) -> dict[str, Any]:
         for i, t in enumerate(temp_grid)
     ]
 
-    erow = point_res["enriched_row"]
     return {
-        "prediction": _clean_float(point_res["prediction"]),
-        "p10": _clean_float(point_res["p10"]),
-        "p50": _clean_float(point_res["p50"]),
-        "p90": _clean_float(point_res["p90"]),
+        "prediction": pred_mean,
+        "p10": pred_p10,
+        "p50": pred_p50,
+        "p90": pred_p90,
         "domain_features": {
             "heating_degree_days": _clean_float(erow.get("heating_degree_days")),
             "wind_power_proxy": _clean_float(erow.get("wind_power_proxy")),
@@ -391,14 +734,15 @@ def simulate_weather(req: SimulationRequest) -> dict[str, Any]:
             "peak_to_mean_ratio": _clean_float(erow.get("peak_to_mean_ratio")),
         },
         "advisor": advisor,
+        "explainability": explainability,
         "wind_curve": wind_curve,
         "temp_curve": temp_curve,
     }
 
 
 @app.get("/predict")
-def predict_endpoint() -> dict[str, Any]:
-    overview = get_overview()
+def predict_endpoint(area: str = Query(default="")) -> dict[str, Any]:
+    overview = get_overview(area=area)
     latest = overview["latest"]
     return {
         "price_area": overview["price_area"],
@@ -408,6 +752,7 @@ def predict_endpoint() -> dict[str, Any]:
         "p50_sek_per_kwh": latest["p50"],
         "p90_sek_per_kwh": latest["p90"],
         "advisor": latest["advisor"],
+        "explainability": latest["explainability"],
     }
 
 

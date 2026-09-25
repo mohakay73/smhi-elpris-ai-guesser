@@ -3,13 +3,16 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>SMHI Elpris AI — Quantile Forecast & What-If Simulator</title>
+  <title>SMHI Elpris AI — Sweden SE1–SE4 Forecast, Explainability & Simulator</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <style>
     body { background-color: #0b1120; color: #f1f5f9; font-family: Inter, system-ui, -apple-system, sans-serif; }
     .glass { background: rgba(30, 41, 59, 0.75); backdrop-filter: blur(12px); border: 1px solid rgba(148, 163, 184, 0.15); }
     input[type="range"] { accent-color: #38bdf8; cursor: pointer; }
+    .zone-path { transition: all 0.22s ease; cursor: pointer; stroke: #0f172a; stroke-width: 2; }
+    .zone-path:hover { filter: brightness(1.25); transform: scale(1.01); }
+    .zone-active { stroke: #38bdf8 !important; stroke-width: 3.5 !important; filter: drop-shadow(0 0 10px rgba(56, 189, 248, 0.45)); }
   </style>
 </head>
 <body class="min-h-screen pb-16">
@@ -20,14 +23,21 @@
         <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-sky-400 to-indigo-600 flex items-center justify-center font-bold text-lg shadow-lg shadow-sky-500/20">⚡</div>
         <div>
           <h1 class="text-lg font-bold tracking-tight text-white">SMHI Elpris AI Forecaster</h1>
-          <p class="text-xs text-slate-400">Quantile Uncertainty Intervals (P10–P90) • Domain Physics Features • Live What-If Simulator</p>
+          <p class="text-xs text-slate-400">Sweden SE1–SE4 Map • AI Explainability Waterfall • Quantile P10–P90 • What-If Simulator</p>
         </div>
       </div>
-      <div class="flex flex-wrap items-center gap-2.5 text-xs">
-        <span id="badge-area" class="px-3 py-1.5 rounded-full bg-sky-500/15 text-sky-300 border border-sky-500/30 font-semibold">Area: SE2 (MEAN)</span>
-        <span id="badge-source" class="px-3 py-1.5 rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/30 font-medium">🔄 Connecting to Render API...</span>
+
+      <!-- Quick Zone Switcher Pills in Header -->
+      <div class="flex flex-wrap items-center gap-2 text-xs">
+        <div class="flex items-center bg-slate-950/80 p-1 rounded-xl border border-slate-800">
+          <button onclick="selectZone('SE1')" id="btn-zone-SE1" class="px-3 py-1.5 rounded-lg font-semibold transition text-slate-400 hover:text-white">SE1 Luleå</button>
+          <button onclick="selectZone('SE2')" id="btn-zone-SE2" class="px-3 py-1.5 rounded-lg font-semibold transition bg-sky-500 text-slate-950 shadow">SE2 Sundsvall</button>
+          <button onclick="selectZone('SE3')" id="btn-zone-SE3" class="px-3 py-1.5 rounded-lg font-semibold transition text-slate-400 hover:text-white">SE3 Stockholm</button>
+          <button onclick="selectZone('SE4')" id="btn-zone-SE4" class="px-3 py-1.5 rounded-lg font-semibold transition text-slate-400 hover:text-white">SE4 Malmö</button>
+        </div>
+        <span id="badge-source" class="px-3 py-1.5 rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/30 font-medium">🔄 Connecting...</span>
         <button onclick="resetToLatest()" class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition">
-          Reset Sliders to Tomorrow's SMHI Forecast
+          Reset Sliders
         </button>
       </div>
     </div>
@@ -37,32 +47,35 @@
     <!-- Top KPI Row -->
     <section class="grid grid-cols-1 md:grid-cols-4 gap-4">
       <div class="glass rounded-2xl p-5">
-        <div class="text-xs font-medium text-slate-400 uppercase tracking-wider">Tomorrow Predicted Price</div>
+        <div class="flex items-center justify-between">
+          <span class="text-xs font-medium text-slate-400 uppercase tracking-wider">Tomorrow Predicted Price</span>
+          <span id="kpi-zone-tag" class="px-2 py-0.5 rounded bg-sky-500/20 text-sky-300 text-[11px] font-bold">SE2</span>
+        </div>
         <div class="mt-2 flex items-baseline gap-2">
-          <span id="kpi-pred" class="text-3xl font-extrabold text-sky-400">0.3420</span>
+          <span id="kpi-pred" class="text-3xl font-extrabold text-sky-400">0.7562</span>
           <span class="text-xs text-slate-400">SEK/kWh</span>
         </div>
-        <div id="kpi-pred-ore" class="mt-1 text-xs text-slate-300">34.2 öre/kWh (Median P50: 0.3280)</div>
+        <div id="kpi-pred-ore" class="mt-1 text-xs text-slate-300">75.6 öre/kWh (Median P50: 0.7573)</div>
       </div>
 
       <div class="glass rounded-2xl p-5">
         <div class="text-xs font-medium text-slate-400 uppercase tracking-wider">80% Confidence Interval (P10–P90)</div>
         <div class="mt-2 flex items-baseline gap-2">
-          <span id="kpi-band" class="text-2xl font-bold text-indigo-300">[0.185 .. 0.560]</span>
+          <span id="kpi-band" class="text-2xl font-bold text-indigo-300">[0.383 .. 1.368]</span>
           <span class="text-xs text-slate-400">SEK/kWh</span>
         </div>
         <div id="kpi-coverage" class="mt-1 text-xs text-slate-400">
-          80% Interval Coverage: 82.4% • Spike Risk: <span id="kpi-spike" class="font-semibold text-emerald-400">LOW</span>
+          Spike Risk: <span id="kpi-spike" class="font-semibold text-amber-400">MODERATE</span> • Quantile Range
         </div>
       </div>
 
       <div class="glass rounded-2xl p-5">
         <div class="text-xs font-medium text-slate-400 uppercase tracking-wider">Model MAE vs Naive Baseline</div>
         <div class="mt-2 flex items-baseline gap-2">
-          <span id="kpi-mae" class="text-2xl font-bold text-emerald-400">0.1180 SEK</span>
-          <span id="kpi-naive-mae" class="text-xs text-slate-400">vs Naive 0.1540</span>
+          <span id="kpi-mae" class="text-2xl font-bold text-emerald-400">0.2150 SEK</span>
+          <span id="kpi-naive-mae" class="text-xs text-slate-400">vs Naive 0.2317</span>
         </div>
-        <div id="kpi-winrate" class="mt-1 text-xs text-slate-300">AI beats Naive baseline by 23.4%</div>
+        <div id="kpi-winrate" class="mt-1 text-xs text-slate-300">AI beats Naive on 55.9% of recent days</div>
       </div>
 
       <div class="glass rounded-2xl p-5">
@@ -70,14 +83,85 @@
         <div class="mt-2 flex items-baseline justify-between">
           <div>
             <span class="text-xs text-slate-400">Wind³ Proxy:</span>
-            <div id="kpi-wind-proxy" class="text-lg font-bold text-cyan-300">42.9 m³/s³</div>
+            <div id="kpi-wind-proxy" class="text-lg font-bold text-cyan-300">7.5 m³/s³</div>
           </div>
           <div>
             <span class="text-xs text-slate-400">Heating Load:</span>
-            <div id="kpi-hdd" class="text-lg font-bold text-amber-300">8.2 °C·d</div>
+            <div id="kpi-hdd" class="text-lg font-bold text-amber-300">8.6 °C·d</div>
           </div>
         </div>
-        <div class="mt-1 text-xs text-slate-400">Non-linear turbine & heat-pump features</div>
+        <div id="kpi-zone-profile" class="mt-1 text-xs text-slate-400">Major Wind & River Hydro Hub</div>
+      </div>
+    </section>
+
+    <!-- NEW SECTION: Interactive Sweden Bidding Zones (SE1-SE4) Map + "Why This Price?" AI Explainability Waterfall -->
+    <section class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+      <!-- Left: Interactive Sweden SVG Map & All-Zones Comparison (5 cols) -->
+      <div class="lg:col-span-5 glass rounded-2xl p-6 flex flex-col justify-between">
+        <div class="flex items-center justify-between mb-3">
+          <div>
+            <h2 class="text-base font-bold text-white">🗺️ Sweden Bidding Zones (`SE1`–`SE4`)</h2>
+            <p class="text-xs text-slate-400">Click any zone on the map or cards to inspect regional weather & price</p>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-12 gap-4 items-center my-auto">
+          <!-- Interactive SVG Map of Sweden -->
+          <div class="col-span-5 flex flex-col items-center justify-center bg-slate-950/60 rounded-2xl p-3 border border-slate-800/80">
+            <svg viewBox="0 0 180 390" class="w-32 h-64 select-none">
+              <!-- SE1: Norrbotten / Luleå -->
+              <path id="map-SE1" onclick="selectZone('SE1')" class="zone-path" fill="#0284c7"
+                d="M 88 12 L 132 24 L 142 66 L 122 115 L 74 110 L 68 62 Z" />
+              <text x="103" y="72" fill="#ffffff" font-size="13" font-weight="bold" text-anchor="middle" pointer-events="none">SE1</text>
+
+              <!-- SE2: Sundsvall / Jämtland -->
+              <path id="map-SE2" onclick="selectZone('SE2')" class="zone-path zone-active" fill="#0ea5e9"
+                d="M 74 110 L 122 115 L 118 195 L 58 192 L 54 145 Z" />
+              <text x="88" y="158" fill="#ffffff" font-size="13" font-weight="bold" text-anchor="middle" pointer-events="none">SE2</text>
+
+              <!-- SE3: Stockholm / Mellansverige -->
+              <path id="map-SE3" onclick="selectZone('SE3')" class="zone-path" fill="#6366f1"
+                d="M 58 192 L 118 195 L 125 255 L 105 298 L 46 285 L 42 235 Z" />
+              <text x="84" y="248" fill="#ffffff" font-size="13" font-weight="bold" text-anchor="middle" pointer-events="none">SE3</text>
+
+              <!-- SE4: Malmö / Södra Sverige -->
+              <path id="map-SE4" onclick="selectZone('SE4')" class="zone-path" fill="#8b5cf6"
+                d="M 46 285 L 105 298 L 96 356 L 56 368 L 44 330 Z" />
+              <text x="74" y="334" fill="#ffffff" font-size="13" font-weight="bold" text-anchor="middle" pointer-events="none">SE4</text>
+            </svg>
+            <span class="text-[10px] text-slate-400 mt-1">Click zone to switch</span>
+          </div>
+
+          <!-- 4 Zone Summary Cards -->
+          <div class="col-span-7 space-y-2.5" id="zones-card-list">
+            <!-- Dynamically populated by renderZoneCards() -->
+          </div>
+        </div>
+      </div>
+
+      <!-- Right: "Why This Price?" AI Explainability Waterfall (7 cols) -->
+      <div class="lg:col-span-7 glass rounded-2xl p-6 flex flex-col justify-between">
+        <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
+          <div>
+            <h2 class="text-base font-bold text-white">🧠 "Why This Price?" — AI Explainability Waterfall</h2>
+            <p class="text-xs text-slate-400">How each physical & market feature shifts tomorrow's price from the 7-day average baseline</p>
+          </div>
+          <span id="exp-summary-pill" class="px-2.5 py-1 rounded-full text-xs font-semibold bg-sky-500/15 text-sky-300 border border-sky-500/30">
+            Baseline → Forecast
+          </span>
+        </div>
+
+        <!-- Waterfall Breakdown Bars -->
+        <div id="explainability-list" class="space-y-3 my-auto py-1">
+          <!-- Populated dynamically by renderExplainability() -->
+        </div>
+
+        <!-- Bottom Equation Bar -->
+        <div id="explainability-equation" class="mt-4 pt-3 border-t border-slate-800/90 flex flex-wrap items-center justify-between text-xs text-slate-300 gap-2">
+          <span>7d Avg Baseline: <strong class="text-white">--</strong></span>
+          <span>+ Weather & Market Deltas: <strong class="text-sky-400">--</strong></span>
+          <span>= Final AI Forecast: <strong class="text-emerald-400 text-sm">-- SEK/kWh</strong></span>
+        </div>
       </div>
     </section>
 
@@ -86,28 +170,28 @@
       <div class="flex flex-col lg:flex-row lg:items-center justify-between gap-6">
         <div class="space-y-1">
           <div class="flex items-center gap-2.5">
-            <span id="advisor-badge" class="px-2.5 py-1 rounded-md text-xs font-bold bg-emerald-500/20 text-emerald-300">CHARGE & RUN HEAVY LOADS TOMORROW</span>
+            <span id="advisor-badge" class="px-2.5 py-1 rounded-md text-xs font-bold bg-emerald-500/20 text-emerald-300">ANALYZING GRID...</span>
             <span class="text-xs text-slate-400" id="advisor-target-date">Target Forecast Date: --</span>
           </div>
           <p id="advisor-reason" class="text-sm text-slate-200 pt-1">
-            Tomorrow is forecasted below the 7-day average with favorable wind generation in SE2.
+            Calculating optimal appliance & EV charging schedule...
           </p>
         </div>
 
         <div class="grid grid-cols-3 gap-4 shrink-0">
           <div class="bg-slate-900/70 rounded-xl px-4 py-3 border border-slate-800">
             <div class="text-xs text-slate-400">🚗 EV Charge (60 kWh)</div>
-            <div id="adv-ev" class="text-lg font-bold text-white mt-0.5">20.52 SEK</div>
+            <div id="adv-ev" class="text-lg font-bold text-white mt-0.5">-- SEK</div>
             <div id="adv-ev-diff" class="text-[11px] text-slate-400">vs 7d avg</div>
           </div>
           <div class="bg-slate-900/70 rounded-xl px-4 py-3 border border-slate-800">
             <div class="text-xs text-slate-400">🔥 Sauna Session (8 kWh)</div>
-            <div id="adv-sauna" class="text-lg font-bold text-white mt-0.5">2.74 SEK</div>
+            <div id="adv-sauna" class="text-lg font-bold text-white mt-0.5">-- SEK</div>
             <div class="text-[11px] text-slate-400">1.5 hr heater run</div>
           </div>
           <div class="bg-slate-900/70 rounded-xl px-4 py-3 border border-slate-800">
             <div class="text-xs text-slate-400">🧺 Laundry + Dryer (2.5 kWh)</div>
-            <div id="adv-laundry" class="text-lg font-bold text-white mt-0.5">0.86 SEK</div>
+            <div id="adv-laundry" class="text-lg font-bold text-white mt-0.5">-- SEK</div>
             <div class="text-[11px] text-slate-400">Full cycle cost</div>
           </div>
         </div>
@@ -120,7 +204,7 @@
       <div class="lg:col-span-5 glass rounded-2xl p-6 space-y-5">
         <div>
           <h2 class="text-base font-bold text-white">🎛️ Interactive "What-If" Weather Simulator</h2>
-          <p class="text-xs text-slate-400">Drag sliders to test how wind & cold snaps shift the P10–P90 price forecast</p>
+          <p class="text-xs text-slate-400">Drag sliders to see how wind & cold snaps shift both the P10–P90 forecast and the Explainability Waterfall above</p>
         </div>
 
         <div class="space-y-4">
@@ -128,9 +212,9 @@
           <div>
             <div class="flex justify-between text-xs mb-1">
               <span class="text-slate-300 font-medium">💨 Tomorrow Wind Speed (mean)</span>
-              <span id="val-wind" class="font-bold text-sky-400">3.5 m/s</span>
+              <span id="val-wind" class="font-bold text-sky-400">1.95 m/s</span>
             </div>
-            <input id="slider-wind" type="range" min="0" max="18" step="0.2" value="3.5" class="w-full" oninput="triggerSim()" />
+            <input id="slider-wind" type="range" min="0" max="18" step="0.2" value="2.0" class="w-full" oninput="triggerSim()" />
             <div class="flex justify-between text-[10px] text-slate-500">
               <span>0 m/s (Calm / Spike Risk)</span>
               <span>15+ m/s (Max Wind Power)</span>
@@ -141,9 +225,9 @@
           <div>
             <div class="flex justify-between text-xs mb-1">
               <span class="text-slate-300 font-medium">🌡️ Tomorrow Temperature (mean)</span>
-              <span id="val-temp" class="font-bold text-amber-300">8.8 °C</span>
+              <span id="val-temp" class="font-bold text-amber-300">8.4 °C</span>
             </div>
-            <input id="slider-temp" type="range" min="-20" max="25" step="0.5" value="8.8" class="w-full" oninput="triggerSim()" />
+            <input id="slider-temp" type="range" min="-20" max="25" step="0.5" value="8.4" class="w-full" oninput="triggerSim()" />
             <div class="flex justify-between text-[10px] text-slate-500">
               <span>-20 °C (Arctic Heating Surge)</span>
               <span>17 °C+ (Zero Heating Degree Days)</span>
@@ -154,27 +238,27 @@
           <div>
             <div class="flex justify-between text-xs mb-1">
               <span class="text-slate-300 font-medium">🌗 Diurnal Temp Spread (Max − Min)</span>
-              <span id="val-spread" class="font-bold text-slate-200">5.1 °C</span>
+              <span id="val-spread" class="font-bold text-slate-200">8.7 °C</span>
             </div>
-            <input id="slider-spread" type="range" min="0.5" max="16" step="0.5" value="5.1" class="w-full" oninput="triggerSim()" />
+            <input id="slider-spread" type="range" min="0.5" max="16" step="0.5" value="8.7" class="w-full" oninput="triggerSim()" />
           </div>
 
           <!-- Today's Spot Price Slider -->
           <div>
             <div class="flex justify-between text-xs mb-1">
               <span class="text-slate-300 font-medium">⚡ Today's Mean Price (`price_today`)</span>
-              <span id="val-price-today" class="font-bold text-emerald-400">0.35 SEK/kWh</span>
+              <span id="val-price-today" class="font-bold text-emerald-400">1.32 SEK/kWh</span>
             </div>
-            <input id="slider-price-today" type="range" min="-0.10" max="2.50" step="0.02" value="0.35" class="w-full" oninput="triggerSim()" />
+            <input id="slider-price-today" type="range" min="-0.10" max="2.50" step="0.02" value="1.32" class="w-full" oninput="triggerSim()" />
           </div>
 
           <!-- 7-Day Rolling Price Slider -->
           <div>
             <div class="flex justify-between text-xs mb-1">
               <span class="text-slate-300 font-medium">📊 7-Day Rolling Average Price</span>
-              <span id="val-price-7d" class="font-bold text-indigo-300">0.45 SEK/kWh</span>
+              <span id="val-price-7d" class="font-bold text-indigo-300">0.66 SEK/kWh</span>
             </div>
-            <input id="slider-price-7d" type="range" min="0.02" max="2.50" step="0.02" value="0.45" class="w-full" oninput="triggerSim()" />
+            <input id="slider-price-7d" type="range" min="0.02" max="2.50" step="0.02" value="0.66" class="w-full" oninput="triggerSim()" />
           </div>
 
           <!-- Weekend / Month Controls -->
@@ -236,29 +320,36 @@
   </main>
 
   <script>
-    // Automatically point to Render when hosted on GitHub Pages (mohakay73.github.io),
-    // or use current origin when served directly from FastAPI / Render / localhost.
     const RENDER_BACKEND = 'https://smhi-elpris-ai-guesser.onrender.com';
     const IS_GITHUB_PAGES = window.location.hostname.includes('github.io') || window.location.protocol === 'file:';
     const API_BASE = IS_GITHUB_PAGES ? RENDER_BACKEND : '';
 
+    const ZONE_PROFILES = {
+      SE1: { name: 'Luleå / Norrbotten', profile: 'Hydro & Wind Surplus Zone', mult: 0.88, tempOff: -3.2, windMult: 1.05 },
+      SE2: { name: 'Sundsvall / Jämtland', profile: 'Major Wind & River Hydro Hub', mult: 1.00, tempOff: 0.0, windMult: 1.00 },
+      SE3: { name: 'Stockholm / Mellansverige', profile: 'High Load Center & Nuclear Mix', mult: 1.38, tempOff: 2.4, windMult: 0.95 },
+      SE4: { name: 'Malmö / Södra Sverige', profile: 'Continental Interconnector Zone', mult: 1.65, tempOff: 4.2, windMult: 1.15 }
+    };
+
+    let activeZone = 'SE2';
     let backendOnline = false;
     let latestState = {
       price_area: 'SE2',
       target: 'mean',
+      zones_summary: null,
       latest: {
-        target_date: new Date(Date.now() + 86400000).toISOString().slice(0, 10),
-        prediction: 0.342,
+        target_date: '2026-09-24',
+        prediction: 0.7562,
         features: {
-          tomorrow_wind_mean: 3.5,
-          tomorrow_temp_mean: 8.8,
-          tomorrow_temp_spread: 5.1,
-          price_today: 0.35,
-          price_yesterday: 0.31,
-          price_7d_ago: 0.48,
-          price_7d_mean: 0.45,
-          peak_today: 0.62,
-          dayofweek: 2,
+          tomorrow_wind_mean: 1.95,
+          tomorrow_temp_mean: 8.37,
+          tomorrow_temp_spread: 8.7,
+          price_today: 1.3162,
+          price_yesterday: 1.2387,
+          price_7d_ago: 0.3161,
+          price_7d_mean: 0.6636,
+          peak_today: 2.102,
+          dayofweek: 3,
           month: 9,
           is_weekend: 0
         }
@@ -270,29 +361,217 @@
     let historyChart = null;
     let simDebounce = null;
 
-    // Client-side domain physics & quantile fallback engine (used immediately on page load
-    // and whenever Render free-tier is waking up from sleep)
+    function computeClientExplainability(params, finalPred) {
+      const base7d = Number(params.price_7d_mean ?? 0.6636);
+      const wind = Number(params.tomorrow_wind_mean ?? 1.95);
+      const temp = Number(params.tomorrow_temp_mean ?? 8.37);
+      const hdd = Math.max(0.0, 17.0 - temp);
+      const priceToday = Number(params.price_today ?? 1.3162);
+      const isWknd = Boolean(params.is_weekend);
+
+      const rawWind = (5.2 - wind) * 0.032;
+      const rawTemp = (hdd - 5.0) * 0.011;
+      const rawSpot = (priceToday - base7d) * 0.22;
+      const rawCal = isWknd ? -0.055 : 0.012;
+
+      const totalTarget = finalPred - base7d;
+      const rawSum = rawWind + rawTemp + rawSpot + rawCal;
+      const resid = totalTarget - rawSum;
+
+      const wDelta = Number((rawWind + resid * 0.35).toFixed(4));
+      const tDelta = Number((rawTemp + resid * 0.25).toFixed(4));
+      const sDelta = Number((rawSpot + resid * 0.30).toFixed(4));
+      const cDelta = Number((totalTarget - (wDelta + tDelta + sDelta)).toFixed(4));
+
+      return {
+        baseline_label: '7-Day Rolling Average Baseline',
+        baseline_value: Number(base7d.toFixed(4)),
+        final_prediction: Number(finalPred.toFixed(4)),
+        contributions: [
+          {
+            key: 'wind',
+            label: `💨 Wind Generation (${wind.toFixed(1)} m/s)`,
+            delta: wDelta,
+            description: wDelta > 0 ? 'Calm wind reduces turbine output -> pushes price UP' : 'Strong wind suppresses grid price -> pulls price DOWN'
+          },
+          {
+            key: 'temp',
+            label: `🌡️ Temp & Heating (${temp.toFixed(1)}°C, ${hdd.toFixed(1)} HDD)`,
+            delta: tDelta,
+            description: tDelta > 0 ? 'Heating demand below 17°C raises load -> pushes price UP' : 'Mild weather keeps heating demand low -> pulls price DOWN'
+          },
+          {
+            key: 'spot',
+            label: `⚡ Today's Spot & Peak (${priceToday.toFixed(2)} SEK)`,
+            delta: sDelta,
+            description: sDelta > 0 ? 'High spot/peak regime today carries into tomorrow' : 'Low spot price today pulls tomorrow down'
+          },
+          {
+            key: 'calendar',
+            label: isWknd ? '📅 Weekend Demand Drop' : '📅 Weekday Industrial Load',
+            delta: cDelta,
+            description: isWknd ? 'Lower commercial/industrial load on weekend' : 'Standard weekday industrial demand'
+          }
+        ]
+      };
+    }
+
+    function renderExplainability(exp) {
+      if (!exp || !exp.contributions) return;
+      const container = document.getElementById('explainability-list');
+      const maxAbs = Math.max(0.15, ...exp.contributions.map(c => Math.abs(c.delta)));
+
+      const totalDelta = exp.final_prediction - exp.baseline_value;
+      const dSign = totalDelta >= 0 ? '+' : '';
+      document.getElementById('exp-summary-pill').textContent = `${exp.baseline_value.toFixed(3)} ${dSign}${totalDelta.toFixed(3)} = ${exp.final_prediction.toFixed(3)} SEK`;
+
+      container.innerHTML = exp.contributions.map(item => {
+        const isPos = item.delta >= 0;
+        const pctWidth = Math.min(100, Math.max(6, (Math.abs(item.delta) / maxAbs) * 100));
+        const sign = isPos ? '+' : '';
+        const barColor = isPos ? 'bg-amber-500/85' : 'bg-emerald-500/85';
+        const textColor = isPos ? 'text-amber-300' : 'text-emerald-300';
+        const badgeBg = isPos ? 'bg-amber-500/15 border-amber-500/30' : 'bg-emerald-500/15 border-emerald-500/30';
+
+        return `
+          <div class="bg-slate-900/65 rounded-xl p-3 border border-slate-800/90">
+            <div class="flex items-center justify-between text-xs mb-1.5">
+              <div>
+                <span class="font-semibold text-white">${item.label}</span>
+                <span class="text-[11px] text-slate-400 ml-2 hidden sm:inline">${item.description}</span>
+              </div>
+              <span class="px-2 py-0.5 rounded border text-xs font-bold ${badgeBg} ${textColor}">
+                ${sign}${item.delta.toFixed(4)} SEK
+              </span>
+            </div>
+            <div class="w-full h-2 bg-slate-800 rounded-full overflow-hidden">
+              <div class="h-full ${barColor} rounded-full transition-all duration-300" style="width: ${pctWidth}%"></div>
+            </div>
+          </div>
+        `;
+      }).join('');
+
+      document.getElementById('explainability-equation').innerHTML = `
+        <span>7d Avg Baseline: <strong class="text-white">${exp.baseline_value.toFixed(4)} SEK</strong></span>
+        <span>Net Weather & Market Impact: <strong class="${totalDelta >= 0 ? 'text-amber-300' : 'text-emerald-300'}">${dSign}${totalDelta.toFixed(4)} SEK</strong></span>
+        <span>Final AI Forecast: <strong class="text-sky-400 text-sm">${exp.final_prediction.toFixed(4)} SEK/kWh</strong></span>
+      `;
+    }
+
+    function renderZoneCards(zonesMap) {
+      const zContainer = document.getElementById('zones-card-list');
+      const codes = ['SE1', 'SE2', 'SE3', 'SE4'];
+
+      // Highlight SVG map paths and header buttons
+      codes.forEach(code => {
+        const mapEl = document.getElementById(`map-${code}`);
+        const btnEl = document.getElementById(`btn-zone-${code}`);
+        if (mapEl) {
+          if (code === activeZone) mapEl.classList.add('zone-active');
+          else mapEl.classList.remove('zone-active');
+        }
+        if (btnEl) {
+          if (code === activeZone) {
+            btnEl.className = 'px-3 py-1.5 rounded-lg font-semibold transition bg-sky-500 text-slate-950 shadow';
+          } else {
+            btnEl.className = 'px-3 py-1.5 rounded-lg font-semibold transition text-slate-400 hover:text-white';
+          }
+        }
+      });
+
+      zContainer.innerHTML = codes.map(code => {
+        const z = (zonesMap && zonesMap[code]) ? zonesMap[code] : {
+          area: code,
+          name: ZONE_PROFILES[code].name,
+          prediction: 0.7562 * (code === 'SE2' ? 1.0 : (0.65 + 0.35 * ZONE_PROFILES[code].mult)),
+          wind_ms: 1.95 * ZONE_PROFILES[code].windMult,
+          temp_c: 8.37 + ZONE_PROFILES[code].tempOff
+        };
+        const isSelected = code === activeZone;
+        const borderCls = isSelected
+          ? 'border-sky-400 bg-sky-500/15 shadow-md shadow-sky-500/10'
+          : 'border-slate-800 bg-slate-900/65 hover:border-slate-700';
+
+        return `
+          <div onclick="selectZone('${code}')" class="cursor-pointer rounded-xl p-2.5 border transition ${borderCls} flex items-center justify-between">
+            <div>
+              <div class="flex items-center gap-1.5">
+                <span class="text-xs font-extrabold ${isSelected ? 'text-sky-300' : 'text-white'}">${code}</span>
+                <span class="text-[11px] text-slate-300 font-medium">${z.name.split('/')[0]}</span>
+              </div>
+              <div class="text-[10px] text-slate-400 mt-0.5">
+                💨 ${Number(z.wind_ms).toFixed(1)} m/s • 🌡️ ${Number(z.temp_c).toFixed(1)}°C
+              </div>
+            </div>
+            <div class="text-right">
+              <div class="text-sm font-bold ${isSelected ? 'text-sky-300' : 'text-white'}">${Number(z.prediction).toFixed(3)}</div>
+              <div class="text-[10px] text-slate-400">SEK/kWh</div>
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    async function selectZone(zoneCode) {
+      activeZone = zoneCode;
+      document.getElementById('kpi-zone-tag').textContent = zoneCode;
+      document.getElementById('kpi-zone-profile').textContent = ZONE_PROFILES[zoneCode].profile;
+      renderZoneCards(latestState.zones_summary);
+
+      if (backendOnline) {
+        try {
+          const res = await fetch(`${API_BASE}/api/overview?area=${zoneCode}`);
+          if (res.ok) {
+            const data = await res.json();
+            latestState = data;
+            renderZoneCards(data.zones_summary);
+            setSlidersFromFeatures(data.latest.features);
+            renderHistoryChart(data.history);
+            renderExplainability(data.latest.explainability);
+            await runSimulation();
+            return;
+          }
+        } catch (e) {
+          console.warn('Zone switch fallback:', e);
+        }
+      }
+
+      // Client-side zone adaptation fallback
+      const zMeta = ZONE_PROFILES[zoneCode];
+      const baseF = latestState.latest.features;
+      const adapted = {
+        ...baseF,
+        tomorrow_temp_mean: Number((8.37 + zMeta.tempOff).toFixed(1)),
+        tomorrow_wind_mean: Number((1.95 * zMeta.windMult).toFixed(1)),
+        price_today: Number((1.3162 * zMeta.mult).toFixed(2)),
+        price_7d_mean: Number((0.6636 * zMeta.mult).toFixed(2))
+      };
+      setSlidersFromFeatures(adapted);
+      await runSimulation();
+    }
+
     function clientPhysicsPredict(params) {
-      const wind = Number(params.tomorrow_wind_mean ?? 3.5);
-      const temp = Number(params.tomorrow_temp_mean ?? 8.8);
-      const spread = Number(params.tomorrow_temp_spread ?? 5.0);
-      const priceToday = Number(params.price_today ?? 0.35);
-      const price7d = Number(params.price_7d_mean ?? 0.45);
+      const zMeta = ZONE_PROFILES[activeZone] || ZONE_PROFILES.SE2;
+      const scale = activeZone === 'SE2' ? 1.0 : (0.65 + 0.35 * zMeta.mult);
+      const wind = Number(params.tomorrow_wind_mean ?? 1.95);
+      const temp = Number(params.tomorrow_temp_mean ?? 8.37);
+      const spread = Number(params.tomorrow_temp_spread ?? 8.7);
+      const priceToday = Number(params.price_today ?? 1.32);
+      const price7d = Number(params.price_7d_mean ?? 0.66);
       const isWeekend = Number(params.is_weekend ?? 0);
 
       const hdd = Math.max(0.0, 17.0 - temp);
       const windProxy = Math.pow(Math.min(Math.max(wind, 0.0), 15.0), 3);
 
-      // Anchored response combining persistence, 7d mean, wind³ suppression, and heating degree load
-      const anchor = 0.48 * priceToday + 0.37 * price7d + 0.06;
-      const windEffect = -0.19 * (1 - Math.exp(-wind / 4.8));
-      const heatingEffect = 0.014 * hdd + (temp < 0 ? 0.012 * Math.abs(temp) : 0);
+      const anchor = 0.44 * priceToday + 0.36 * price7d + 0.04;
+      const windEffect = -0.22 * (1 - Math.exp(-wind / 4.8));
+      const heatingEffect = 0.013 * hdd + (temp < 0 ? 0.012 * Math.abs(temp) : 0);
       const spreadEffect = 0.004 * spread;
       const weekendDiscount = isWeekend ? -0.065 : 0.0;
 
-      const mean = Math.max(0.01, anchor + windEffect + heatingEffect + spreadEffect + weekendDiscount);
-      const uncertainty = Math.max(0.08, mean * 0.42 + (wind < 2.5 ? 0.14 : 0.03) + (hdd > 15 ? 0.10 : 0.0));
-      const p50 = Math.max(0.01, mean * 0.96);
+      const mean = Math.max(0.01, (anchor + windEffect + heatingEffect + spreadEffect + weekendDiscount) * scale);
+      const uncertainty = Math.max(0.08, mean * 0.45 + (wind < 2.5 ? 0.16 : 0.03));
+      const p50 = Math.max(0.01, mean * 0.99);
       const p10 = Math.max(0.005, p50 - uncertainty * 0.72);
       const p90 = p50 + uncertainty * 1.18;
 
@@ -310,18 +589,18 @@
     }
 
     function buildClientAdvisor(pred, p10, p90, params) {
-      const price7d = Number(params.price_7d_mean ?? 0.45);
-      const priceToday = Number(params.price_today ?? 0.35);
+      const price7d = Number(params.price_7d_mean ?? 0.66);
+      const priceToday = Number(params.price_today ?? 1.32);
       const ev60 = pred * 60.0;
       const ev7d = price7d * 60.0;
       const diffPct = ((pred - price7d) / Math.max(price7d, 0.05)) * 100.0;
       const spikeRisk = p90 > Math.max(1.0, price7d * 1.6) ? 'HIGH' : (p90 > price7d * 1.25 ? 'MODERATE' : 'LOW');
 
       let badge = 'NORMAL GRID CONDITIONS';
-      let reason = 'Tomorrow is forecasted near recent levels; schedule EV & laundry during night hours.';
-      if (pred <= priceToday * 0.94 && pred <= price7d) {
+      let reason = 'Tomorrow is stable near recent levels; schedule EV & laundry during off-peak night hours.';
+      if (pred <= priceToday * 0.92 && pred <= price7d) {
         badge = 'CHARGE & RUN HEAVY LOADS TOMORROW';
-        reason = `Tomorrow is forecasted ${Math.abs(diffPct).toFixed(1)}% below the 7-day average thanks to favorable weather conditions.`;
+        reason = `Tomorrow is forecasted ${Math.abs(diffPct).toFixed(1)}% below the 7-day average and cheaper than today.`;
       } else if (pred >= priceToday * 1.12) {
         badge = 'USE POWER TODAY INSTEAD OF TOMORROW';
         reason = `Cold/low-wind conditions push tomorrow's forecast +${(((pred - priceToday) / Math.max(priceToday, 0.05)) * 100).toFixed(1)}% above today.`;
@@ -358,20 +637,20 @@
     }
 
     function setSlidersFromFeatures(f) {
-      document.getElementById('slider-wind').value = f.tomorrow_wind_mean ?? 3.5;
-      document.getElementById('val-wind').textContent = `${Number(f.tomorrow_wind_mean ?? 3.5).toFixed(1)} m/s`;
+      document.getElementById('slider-wind').value = f.tomorrow_wind_mean ?? 1.95;
+      document.getElementById('val-wind').textContent = `${Number(f.tomorrow_wind_mean ?? 1.95).toFixed(1)} m/s`;
 
-      document.getElementById('slider-temp').value = f.tomorrow_temp_mean ?? 8.8;
-      document.getElementById('val-temp').textContent = `${Number(f.tomorrow_temp_mean ?? 8.8).toFixed(1)} °C`;
+      document.getElementById('slider-temp').value = f.tomorrow_temp_mean ?? 8.4;
+      document.getElementById('val-temp').textContent = `${Number(f.tomorrow_temp_mean ?? 8.4).toFixed(1)} °C`;
 
-      document.getElementById('slider-spread').value = f.tomorrow_temp_spread ?? 5.1;
-      document.getElementById('val-spread').textContent = `${Number(f.tomorrow_temp_spread ?? 5.1).toFixed(1)} °C`;
+      document.getElementById('slider-spread').value = f.tomorrow_temp_spread ?? 8.7;
+      document.getElementById('val-spread').textContent = `${Number(f.tomorrow_temp_spread ?? 8.7).toFixed(1)} °C`;
 
-      document.getElementById('slider-price-today').value = f.price_today ?? 0.35;
-      document.getElementById('val-price-today').textContent = `${Number(f.price_today ?? 0.35).toFixed(2)} SEK/kWh`;
+      document.getElementById('slider-price-today').value = f.price_today ?? 1.32;
+      document.getElementById('val-price-today').textContent = `${Number(f.price_today ?? 1.32).toFixed(2)} SEK/kWh`;
 
-      document.getElementById('slider-price-7d').value = f.price_7d_mean ?? 0.45;
-      document.getElementById('val-price-7d').textContent = `${Number(f.price_7d_mean ?? 0.45).toFixed(2)} SEK/kWh`;
+      document.getElementById('slider-price-7d').value = f.price_7d_mean ?? 0.66;
+      document.getElementById('val-price-7d').textContent = `${Number(f.price_7d_mean ?? 0.66).toFixed(2)} SEK/kWh`;
 
       document.getElementById('check-weekend').checked = Boolean(f.is_weekend);
       document.getElementById('select-month').value = String(f.month || 9);
@@ -396,15 +675,16 @@
     function getSliderPayload() {
       const baseF = latestState.latest.features || {};
       return {
+        price_area: activeZone,
         tomorrow_wind_mean: parseFloat(document.getElementById('slider-wind').value),
         tomorrow_temp_mean: parseFloat(document.getElementById('slider-temp').value),
         tomorrow_temp_spread: parseFloat(document.getElementById('slider-spread').value),
         price_today: parseFloat(document.getElementById('slider-price-today').value),
         price_7d_mean: parseFloat(document.getElementById('slider-price-7d').value),
-        price_yesterday: baseF.price_yesterday ?? 0.35,
-        price_7d_ago: baseF.price_7d_ago ?? 0.40,
-        peak_today: Math.max(parseFloat(document.getElementById('slider-price-today').value) * 1.6, baseF.peak_today ?? 0.65),
-        dayofweek: document.getElementById('check-weekend').checked ? 6 : 2,
+        price_yesterday: baseF.price_yesterday ?? 1.24,
+        price_7d_ago: baseF.price_7d_ago ?? 0.32,
+        peak_today: Math.max(parseFloat(document.getElementById('slider-price-today').value) * 1.6, baseF.peak_today ?? 2.10),
+        dayofweek: document.getElementById('check-weekend').checked ? 6 : 3,
         month: parseInt(document.getElementById('select-month').value, 10),
         is_weekend: document.getElementById('check-weekend').checked ? 1 : 0
       };
@@ -423,6 +703,11 @@
           if (res.ok) {
             const data = await res.json();
             updateKPIsAndAdvisor(data.prediction, data.p10, data.p50, data.p90, data.domain_features, data.advisor);
+            if (data.explainability) {
+              renderExplainability(data.explainability);
+            } else {
+              renderExplainability(computeClientExplainability(body, data.prediction));
+            }
             renderSensitivityCharts(data.wind_curve, data.temp_curve);
             return;
           }
@@ -431,10 +716,10 @@
         }
       }
 
-      // Client-side instant calculation
       const sim = clientPhysicsPredict(body);
       const adv = buildClientAdvisor(sim.prediction, sim.p10, sim.p90, body);
       updateKPIsAndAdvisor(sim.prediction, sim.p10, sim.p50, sim.p90, sim.domain, adv);
+      renderExplainability(computeClientExplainability(body, sim.prediction));
 
       const windCurve = [];
       for (let w = 0; w <= 18; w += 1) {
@@ -499,13 +784,13 @@
     function generateDefaultHistory() {
       const records = [];
       const now = new Date();
-      let prev = 0.36;
+      let prev = 0.56;
       for (let i = 24; i >= 0; i--) {
         const d = new Date(now.getTime() - i * 86400000).toISOString().slice(0, 10);
         const wind = 2.0 + Math.abs(Math.sin(i * 0.55)) * 9.5;
         const temp = 6.0 + Math.cos(i * 0.3) * 6.0;
-        const sim = clientPhysicsPredict({ tomorrow_wind_mean: wind, tomorrow_temp_mean: temp, price_today: prev, price_7d_mean: 0.42 });
-        const actual = i === 0 ? null : Math.max(0.02, sim.prediction + Math.sin(i * 1.3) * 0.065);
+        const sim = clientPhysicsPredict({ tomorrow_wind_mean: wind, tomorrow_temp_mean: temp, price_today: prev, price_7d_mean: 0.66 });
+        const actual = i === 0 ? null : Math.max(0.02, sim.prediction + Math.sin(i * 1.3) * 0.085);
         records.push({ date: d, actual, predicted: sim.prediction, p10: sim.p10, p50: sim.p50, p90: sim.p90, naive: prev });
         if (actual !== null) prev = actual;
       }
@@ -539,53 +824,34 @@
     }
 
     async function initDashboard() {
-      // 1. Render immediately so UI is 100% interactive with zero wait time
       document.getElementById('advisor-target-date').textContent = `Target Forecast Date: ${latestState.latest.target_date}`;
+      renderZoneCards(null);
       setSlidersFromFeatures(latestState.latest.features);
       renderHistoryChart(generateDefaultHistory());
       await runSimulation();
 
-      // 2. Connect to Render / FastAPI backend
       try {
-        const res = await fetch(`${API_BASE}/api/overview`);
+        const res = await fetch(`${API_BASE}/api/overview?area=${activeZone}`);
         if (res.ok) {
           const data = await res.json();
           backendOnline = true;
           latestState = data;
-          document.getElementById('badge-area').textContent = `Area: ${data.price_area} (${data.target.toUpperCase()})`;
           document.getElementById('badge-source').textContent = '🟢 Live Render + Neon DB';
           document.getElementById('badge-source').className = 'px-3 py-1.5 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 font-medium';
           document.getElementById('advisor-target-date').textContent = `Target Forecast Date: ${data.latest.target_date}`;
           document.getElementById('kpi-mae').textContent = `${data.metrics.mae.toFixed(4)} SEK`;
           document.getElementById('kpi-naive-mae').textContent = `vs Naive ${data.metrics.naive_mae.toFixed(4)}`;
+          renderZoneCards(data.zones_summary);
           setSlidersFromFeatures(data.latest.features);
+          if (data.latest.explainability) {
+            renderExplainability(data.latest.explainability);
+          }
           renderHistoryChart(data.history);
           await runSimulation();
           return;
         }
       } catch (err) {
-        console.info('Checking legacy /predict endpoint on Render...', err);
-      }
-
-      // 3. Fallback check for legacy /predict endpoint on Render (before Render redeploys new app.py)
-      try {
-        const resLegacy = await fetch(`${RENDER_BACKEND}/predict`);
-        if (resLegacy.ok) {
-          const legacy = await resLegacy.json();
-          const predVal = Number(legacy.predicted_price_sek_per_kwh ?? 0.342);
-          latestState.price_area = legacy.price_area || 'SE2';
-          latestState.latest.target_date = (legacy.target_date || '').split('T')[0] || latestState.latest.target_date;
-          latestState.latest.features.price_today = predVal;
-          document.getElementById('badge-area').textContent = `Area: ${latestState.price_area}`;
-          document.getElementById('badge-source').textContent = '🟢 Connected to Render (/predict)';
-          document.getElementById('badge-source').className = 'px-3 py-1.5 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 font-medium';
-          document.getElementById('advisor-target-date').textContent = `Target Forecast Date: ${latestState.latest.target_date}`;
-          setSlidersFromFeatures(latestState.latest.features);
-          await runSimulation();
-          return;
-        }
-      } catch (err2) {
-        document.getElementById('badge-source').textContent = '⚡ Interactive Physics Mode (Render sleeping)';
+        console.info('Fallback client mode active while Render wakes:', err);
       }
     }
 
